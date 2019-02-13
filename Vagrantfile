@@ -34,6 +34,9 @@ clusterDetails = {
   ]
 }
 
+
+
+# Each host calls this for each member of the cluster
 $add_network_config_linux = <<-ADD_NETWORK_CONFIG_LINUX_HEREDOC
 #!/bin/bash -eu
 
@@ -43,7 +46,7 @@ targetNatIp=$3
 targetNatNetCidr=$4
 targetNatNetIp=$5
 targetNatNetMask=$6
-targetVmIp_NOT_USED_FOR_LINUX=$7
+targetVmIp=$7
 
 if [[ $# -ne 7 ]]; then
   echo "[ERROR] Invalid number of parameters for add_network_config_linux: $#"
@@ -56,7 +59,7 @@ fi
 
 if ! ip route | grep "${targetNatNetCidr}"; then
   # Create non-persistent route for current boot
-  ip route add ${targetNatNetCidr} via ${currentVmIp}
+  ip route add ${targetNatNetCidr} dev eth1 via ${targetVmIp}
 fi
 
 touch #{nicRoutePath}
@@ -72,6 +75,8 @@ fi
 
 ADD_NETWORK_CONFIG_LINUX_HEREDOC
 
+
+# Each host calls this for each member of the cluster
 $add_network_config_win10 = <<-ADD_NETWORK_CONFIG_WIN10_HEREDOC
 # powershell
 
@@ -129,31 +134,87 @@ function Add-ResolveHost {
   }
 }
 
+# ROUTE: Add routes to NAT interfaces.
 Add-NetRouteByDestination $targetNatNetCidr $currentVmIp $targetVmIp
+# FAKE DNS: Allow other hosts to be resolved
 Add-ResolveHost $targetNatIp $targetHostName
+
+# IP routing/forwarding: Allows network packets to be routed across interfaces
+reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters /v IPEnableRouter /D 1 /f
+sc.exe config RemoteAccess start= auto
+sc.exe start RemoteAccess
+
+# FIREWALL: Allow pings from each NAT interface
+New-NetFirewallRule -DisplayName "Allow inbound ICMPv4" -Direction Inbound -Protocol ICMPv4 -IcmpType 8 -RemoteAddress ${targetNatNetCidr} -Action Allow | out-null
+New-NetFirewallRule -DisplayName "Allow inbound ICMPv6" -Direction Inbound -Protocol ICMPv6 -IcmpType 8 -RemoteAddress ${targetNatNetCidr} -Action Allow | out-null
 
 ADD_NETWORK_CONFIG_WIN10_HEREDOC
 
-$ansible_config_win10 = <<-ANSIBLE_CONFIG_WIN10_HEREDOC
+
+# Called once per host
+$host_config_linux = <<-HOST_CONFIG_LINUX_HEREDOC
+#!/bin/bash -eu
+
+targetVmNetCidr=$1
+
+if [[ $# -ne 1 ]]; then
+  echo "[ERROR] Invalid number of parameters for host_config_linux: $#"
+  exit 1
+fi
+HOST_CONFIG_LINUX_HEREDOC
+
+# Called once per host
+$host_config_win10 = <<-HOST_CONFIG_WIN10_HEREDOC
 # powershell
 
-$currentVmIp=$args[0]
-$targetHostName=$args[1]
-$targetNatIp=$args[2]
-$targetNatNetIp=$args[3]
-$targetNatNetCidr=$args[4]
-$targetNatNetMask=$args[5]
+$vmNetCidr=$args[0]
 
-if ($args.count -ne 6) {
-  echo "[ERROR] Invalid paramter count: $args.count"
+if ($args.count -ne 1) {
+  echo "[ERROR] Invalid paramter count: $($args.count)"
   exit 1
 }
 
-New-NetFirewallRule -DisplayName "Allow inbound ICMPv4" -Direction Inbound -Protocol ICMPv4 -IcmpType 8 -RemoteAddress $targetNatNetCidr -Action Allow
+# FIREWALL: allow pings from members of VM network
+New-NetFirewallRule -DisplayName "Allow inbound ICMPv4" -Direction Inbound -Protocol ICMPv4 -IcmpType 8 -RemoteAddress ${vmNetCidr} -Action Allow | out-null
+New-NetFirewallRule -DisplayName "Allow inbound ICMPv6" -Direction Inbound -Protocol ICMPv6 -IcmpType 8 -RemoteAddress ${vmNetCidr} -Action Allow | out-null
 
-ANSIBLE_CONFIG_WIN10_HEREDOC
+HOST_CONFIG_WIN10_HEREDOC
 
-def configureNetworkRouting(clusterDetails, machine, currentHostName, currentVmIp, currentOsFamily)
+
+def configureHost(nodeType, machine, clusterDetails, currentHostName, currentVmIp)
+  vmNetCidr = "#{clusterDetails[:vmBaseIp]}.0/24"
+  currentOsFamily = nodeType[:osFamily]
+
+  if currentOsFamily == 'win10'
+    machine.vm.guest = :windows
+    machine.vm.communicator = "winrm"
+    machine.winrm.username = "devops"
+    # FIXME: load password from file
+    machine.winrm.password = "D3v0ps1sAw3s0m3"
+    # Windows install can take a long time and can cause the winrm 'keep alive' to panic and quit
+    machine.winrm.retry_limit = 30
+    machine.winrm.retry_delay = 10
+    if nodeType[:kerberosEnabled]
+      machine.winrm.transport = :kerberos
+    else
+      machine.winrm.basic_auth_only = true
+      machine.winrm.transport = :plaintext
+    end
+    machine.vm.boot_timeout = 600
+    machine.vm.graceful_halt_timeout = 600
+    machine.vm.network :forwarded_port, guest: 3389, host: 3389
+    machine.vm.network :forwarded_port, guest: 5985, host: 55985, id: "winrm", auto_correct: true
+  end
+
+  machine.vm.provision  "shell" do |bash_shell|
+    if currentOsFamily == 'linux'
+      bash_shell.inline = $host_config_linux
+    else
+      bash_shell.inline = $host_config_win10
+    end
+    bash_shell.args = "#{vmNetCidr}"
+  end
+
   # Add route and /etc/hosts entries for all other nodes in cluster
   clusterDetails[:nodeTypes].each do |innerNodeType|
     (0..innerNodeType[:count]-1).each do |innerNodeIndex|
@@ -179,18 +240,6 @@ def configureNetworkRouting(clusterDetails, machine, currentHostName, currentVmI
     end
   end
 end
-
-def configureForAnsible(clusterDetails, machine, currentHostName, currentVmIp, currentOsFamily)
-#  machine.vm.provision  "shell" do |bash_shell|
-#    if currentOsFamily == 'linux'
-#      bash_shell.inline = $ansible_config_linux
-#    else
-#      bash_shell.inline = $ansible_config_win10
-#    end
-#    bash_shell.args = "#{currentVmIp} #{targetHostName} #{targetNatIp} #{targetNatNetIp} #{targetNatNetCidr} #{targetNatNetMask}"
-#  end
-end
-
 
 Vagrant.configure("2") do |config|
   # always use Vagrants insecure key
@@ -223,28 +272,7 @@ Vagrant.configure("2") do |config|
           #       Otherwise vagrant would make all nodes 10.0.2.15, which confuses kubeadm
           provider_vm.customize ['modifyvm',:id, '--natnet1', "#{currentHostCidr}"] 
         end
-        if nodeType[:osFamily] == 'win10'
-          machine.vm.guest = :windows
-          machine.vm.communicator = "winrm"
-          machine.winrm.username = "devops"
-          # FIXME: load password from file
-          machine.winrm.password = "D3v0ps1sAw3s0m3"
-          # Windows install can take a long time and can cause the winrm 'keep alive' to panic and quit
-          machine.winrm.retry_limit = 30
-          machine.winrm.retry_delay = 10
-          if nodeType[:kerberosEnabled]
-            machine.winrm.transport = :kerberos
-          else
-            machine.winrm.basic_auth_only = true
-            machine.winrm.transport = :plaintext
-          end
-          machine.vm.boot_timeout = 600
-          machine.vm.graceful_halt_timeout = 600
-          machine.vm.network :forwarded_port, guest: 3389, host: 3389
-          machine.vm.network :forwarded_port, guest: 5985, host: 55985, id: "winrm", auto_correct: true
-        end        
-        configureNetworkRouting(clusterDetails, machine, currentNodeName, currentVmIp, nodeType[:osFamily])
-#        configureForAnsible(clusterDetails, machine, currentNodeName, currentVmIp, nodeType[:osFamily])
+        configureHost(nodeType, machine, clusterDetails, currentNodeName, currentVmIp)
       end
     end
   end
