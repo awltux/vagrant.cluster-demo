@@ -1,0 +1,47 @@
+{
+  "provisionerHostname": "%%HOSTNAME_BASE%%-jumpbox-22",
+  "localLogin": "devops",
+  "ldapLogin": "devopssa",
+  "ldapRealm": "LOCAL.TMVSE.COM",
+  "vmProvider": "virtualbox",
+  "vmBaseIp": "10.105.20",
+  "natBaseIp": "10.150",
+  "natNetCidrMask": "24",
+  "natNetAddrMask": "255.255.255.0",
+  "envNames": [
+    "vagrant",
+    "dev",
+    "test",
+    "prod"
+  ],
+  "nodeGroups": [
+    { 
+      "hostnameBase": "%%HOSTNAME_BASE%%",
+      "provisionType": "native",
+      "nodeGroup": "appliance",
+      "osFamily": "linux",
+      "kerberosEnabled": false,
+      "imageType": "external",
+      "imageName": "centos/7",
+      "imageVersion": "1812.01",
+      "addrStart": 40,
+      "nodeCount": 1,
+      "memory": 2048,
+      "cpu": 2
+    },
+    { 
+      "hostnameBase": "%%HOSTNAME_BASE%%-provisioner",
+      "provisionType": "native",
+      "nodeGroup": "provisioner",
+      "osFamily": "linux",
+      "kerberosEnabled": false,
+      "imageType": "external",
+      "imageName": "centos/7",
+      "imageVersion": "1812.01",
+      "addrStart": 22,
+      "nodeCount": 1,
+      "memory": 2048,
+      "cpu": 2
+    }
+  ]
+}

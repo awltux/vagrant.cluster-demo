@@ -1,0 +1,58 @@
+{
+  "provisionerHostname": "devops",
+  "localLogin": "devops",
+  "ldapLogin": "devopssa",
+  "vm_provider": "virtualbox",
+  "vmBaseIp": "172.28.128",
+  "natBaseIp": "10.150",
+  "natNetCidrMask": "24",
+  "natNetAddrMask": "255.255.255.0",
+  "nodeTypes": [
+    { 
+      "nodeType": "jenkins",
+      "hostnameBase": "builder",
+      "osFamily": "win10",
+      "kerberosEnabled": false,
+      "imageName": "canon/windows10",
+      "imageVersion": "0",
+      "addrStart": 10,
+      "nodeCount": 0,
+      "memory": 4096,
+      "cpu": 2,
+      "hostnameArray": [
+        "win10"
+      ]
+    },
+    { 
+      "nodeType": "provisioner",
+      "hostnameBase": "devops",
+      "osFamily": "linux",
+      "kerberosEnabled": true,
+      "imageName": "centos/7",
+      "imageVersion": "1812.01",
+      "addrStart": 20,
+      "nodeCount": 1,
+      "memory": 2048,
+      "cpu": 1,
+      "hostnameArray": [
+        "devops"
+      ]      
+    },
+    { 
+      "nodeType": "application",
+      "hostnameBase": "app",
+      "osFamily": "linux",
+      "kerberosEnabled": true,
+      "imageName": "centos/7",
+      "imageVersion": "1812.01",
+      "addrStart": 20,
+      "nodeCount": 2,
+      "memory": 2048,
+      "cpu": 1,
+      "hostnameArray": [
+        "app1",
+        "app2"
+      ]      
+    }
+  ]
+}
